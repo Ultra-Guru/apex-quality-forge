@@ -1,0 +1,101 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# audit.yml — 主仓（Android-Guru-Agent）每日质量审计
+#
+# 触发：每日 cron（UTC 21:00 = 北京 05:00）/ 手动 / repository_dispatch
+# 流程：浅克隆主仓 → forge_audit 全量审计（门禁镜像 + 深度指标）
+#       → 报告 artifact + Step Summary → 硬红灯时开 issue 告警（去重：
+#       同一红灯指纹只开一个 open issue）
+#
+# 定位背景：#427 事件（主仓 PR 漏拦 → main Quality Gate 红灯数日无人知）
+# 证明需要一条独立于主仓 CI 的第三方哨兵 —— 本仓即哨兵。
+# ═══════════════════════════════════════════════════════════════════════════
+name: Audit Main Repo
+
+on:
+  schedule:
+    - cron: "0 21 * * *" # UTC 21:00 = 北京 05:00
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "审计目标 ref（默认 origin/main）"
+        default: main
+  repository_dispatch:
+    types: [audit-request]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: audit-main
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: 审计 Android-Guru-Agent
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 浅克隆主仓
+        run: |
+          REF="${{ github.event.client_payload.ref || inputs.ref || 'main' }}"
+          echo "AUDIT_REF=$REF" >> "$GITHUB_ENV"
+          git clone --depth 1 --branch "$REF" \
+            https://github.com/Ultra-Guru/Android-Guru-Agent.git /tmp/host-repo
+
+      - name: 审计（门禁镜像 + 深度指标）
+        working-directory: /tmp/host-repo
+        run: python3 "${{ github.workspace }}/audits/forge_audit.py" /tmp/host-repo
+
+      - name: 上传审计报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-report-${{ env.AUDIT_REF }}
+          path: /tmp/host-repo/audit-report.md
+          if-no-files-found: error
+
+      - name: 红灯开 issue（指纹去重）
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('/tmp/host-repo/audit-report.md', 'utf8');
+            const redLines = report.split('\n')
+              .filter(l => l.startsWith('- ') && (l.includes('超预算') || l.includes('空 catch')
+                || l.includes('失衡') || l.includes('缺键') || l.includes('占位符不匹配')
+                || l.includes('多余键') || l.includes('反射') || l.includes('printStackTrace')
+                || l.includes('collectAsState')))
+              .slice(0, 40);
+            const crypto = require('crypto');
+            const ref = process.env.AUDIT_REF || 'main';
+            const fingerprint = crypto.createHash('sha1')
+              .update(redLines.map(l => l.replace(/:\d+:/, ':L:').replace(/\d+\/\d+/, 'N/N')).join('|'))
+              .digest('hex').slice(0, 10);
+            const title = `🔥 主仓质量审计红灯 [${ref}]（${redLines.length} 项）`;
+            const body = `每日审计发现硬红灯（独立哨兵，与主仓 CI 互为校验）。\n\n` +
+              `**目标 ref**: \`${ref}\`\n**红灯指纹**: \`${fingerprint}\`\n\n` +
+              `${redLines.join('\n')}\n\n---\n（同指纹不重复开单；修复合入后下轮审计自动转绿）`;
+            const seen = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'audit-red', per_page: 50
+            });
+            const dup = seen.data.find(i => i.title.includes(`[${ref}]`));
+            if (dup) {
+              await github.rest.issues.createComment(
+                { owner: context.repo.owner, repo: context.repo.repo, issue_number: dup.number,
+                  body: `下轮审计仍红（指纹 \`${fingerprint}\`）—— 更新见最新报告 artifact。` });
+              core.notice(`已有同 ref 开放告警 #${dup.number}，仅追评`);
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['audit-red'] });
+              core.notice('新开 audit-red issue');
+            }

@@ -1,0 +1,35 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# self-test.yml — 审计器自测（本仓 CI：审计器自身正确性 = 一切审计的前提）
+# ═══════════════════════════════════════════════════════════════════════════
+name: Self-Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: 审计器自测（12 用例）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装 pytest
+        run: pip install pytest
+
+      - name: 跑自测
+        run: python3 -m pytest tests/ -v --tb=short
+
+      - name: 冒烟（对空目录审计 = 零文件零红灯）
+        run: |
+          mkdir -p /tmp/empty-repo
+          python3 audits/forge_audit.py /tmp/empty-repo
