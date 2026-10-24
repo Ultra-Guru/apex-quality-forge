@@ -48,4 +48,5 @@ pip install pytest && python3 -m pytest tests/ -v
 ## 质量口径验证记录
 
 - 2026-10-24：对主仓 main（90c97f2 前态）审计 → **4 项红灯**（CodeViewModel 1205 超预算 + 3 处 `catch (_:) {}` 空 catch）—— 与主仓 Quality Gate 红灯完全一致，零误报；
-- 同日对修复分支（PR Ultra-Guru/Android-Guru-Agent#435）审计 → **全绿**。
+- 同日对修复分支（PR Ultra-Guru/Android-Guru-Agent#435）审计 → **全绿**；
+- **哨兵首战**（2026-10-24 05:24Z）：audit 红灯 → 自动开 [issue #1](https://github.com/Ultra-Guru/apex-quality-forge/issues/1)（指纹 `1f0645fc`，4 项红灯明细）→ 修复合入（737a4f53）→ 05:32Z 复审**转绿** → issue 关闭。红灯发现 → 告警 → 修复 → 复绿全链路 8 分钟。
